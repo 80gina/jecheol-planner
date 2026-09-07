@@ -4,6 +4,8 @@
     python main.py probe --date 2026-08-26        # KAMIS 응답 구조 확인 (개발용)
     python main.py codes                          # 품목 코드를 KAMIS 에서 받아 저장
     python main.py collect --years 2              # 기간별 가격 수집 → data/prices_raw.csv
+    python main.py weather --years 2              # 기상청 기온·강수 수집
+    python main.py analyze                        # 정제·분석·그래프 6장
     python main.py ingredient                     # 뉴스에서 제철 식재료·지역 추출
     python main.py price --category 채소류         # 지역별 가격 수집
     python main.py menu --people 12               # 지역 맞춤 요리 추천
@@ -27,6 +29,7 @@ import config
 BASE_DIR = Path(__file__).resolve().parent
 CODES_PATH = BASE_DIR / "data" / "item_codes.json"
 RAW_CSV = BASE_DIR / "data" / "prices_raw.csv"
+WEATHER_CSV = BASE_DIR / "data" / "weather_raw.csv"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,6 +61,14 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--cls", default="01", choices=["01", "02"],
                     help="01=소매, 02=도매 (기본: 01)")
     co.add_argument("--country", default="", help="지역 코드 (생략하면 전국)")
+
+    we = sub.add_parser("weather", help="기상청 일별 기온·강수를 수집한다")
+    we.add_argument("--years", type=int, default=2, help="몇 년치 (기본: 2)")
+    we.add_argument("--region", default="창원", help="관측지점 이름 (기본: 창원)")
+
+    an = sub.add_parser("analyze", help="정제·분석하고 그래프를 그린다")
+    an.add_argument("--focus", default="baechu",
+                    help="이동평균·분해를 자세히 볼 품목 키 (기본: baechu)")
 
     sub.add_parser("ingredient", help="뉴스에서 제철 식재료·지역을 뽑는다")
     sub.add_parser("price", help="지역별 식재료 가격을 수집한다")
@@ -334,6 +345,76 @@ def _row_price(r: dict) -> int | None:
         return None
 
 
+# ─────────────────────────────────────── weather
+
+def cmd_weather(args, cfg: dict, log) -> int:
+    """기상청 일자료를 받아 CSV 로 저장한다. KAMIS 와 독립이라 먼저 해도 된다."""
+    import weather
+
+    station = weather.STATIONS.get(args.region)
+    if not station:
+        print(f"[ERROR] 모르는 지역입니다: {args.region}")
+        print("  쓸 수 있는 지역: " + ", ".join(weather.STATIONS))
+        return 2
+
+    try:
+        key = config.get_key("KMA_SERVICE_KEY")
+    except config.ConfigError as e:
+        log.error("%s", e)
+        print()
+        print("  공공데이터포털(data.go.kr)에서 '기상청_지상(종관, ASOS) 일자료'를")
+        print("  활용신청하면 대개 바로 발급됩니다. 일반 인증키(Decoding) 를 넣으세요.")
+        print()
+        return 2
+
+    end = date.today()
+    start = end - timedelta(days=365 * args.years)
+    log.info("기상 자료 수집 %s ~ %s (%s)", start, end, args.region)
+
+    try:
+        rows = weather.daily(cfg, log, key, station,
+                             start.isoformat(), end.isoformat())
+    except weather.WeatherError as e:
+        log.error("수집 실패: %s", e)
+        return 3
+
+    recs = weather.to_records(rows, args.region)
+    if not recs:
+        print("[ERROR] 한 행도 못 받았습니다. 인증키와 기간을 확인하세요.")
+        return 3
+
+    recs.sort(key=lambda r: r["date"])
+    WEATHER_CSV.parent.mkdir(parents=True, exist_ok=True)
+    with open(WEATHER_CSV, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=["date", "region", "avg_ta",
+                                          "min_ta", "max_ta", "sum_rn"])
+        w.writeheader()
+        w.writerows(recs)
+
+    temps = [r["avg_ta"] for r in recs if r["avg_ta"] is not None]
+    print()
+    print("=" * 62)
+    print("  기상 자료 수집 완료")
+    print("=" * 62)
+    print(f"  지역   {args.region} (관측지점 {station})")
+    print(f"  기간   {recs[0]['date']} ~ {recs[-1]['date']}")
+    print(f"  행수   {len(recs):,}행")
+    if temps:
+        print(f"  평균기온  최저 {min(temps):.1f}℃ · 최고 {max(temps):.1f}℃ "
+              f"· 평균 {sum(temps)/len(temps):.1f}℃")
+    print()
+    print(f"  저장: {WEATHER_CSV}")
+    print()
+    return 0
+
+
+# ─────────────────────────────────────── analyze
+
+def cmd_analyze(args, cfg: dict, log) -> int:
+    import analyze
+    return analyze.run(log, focus=args.focus)
+
+
 # ─────────────────────────────────────── 나머지
 
 def not_ready(name: str, stage: str) -> int:
@@ -358,7 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info("%s — %s", cfg.get("project_name"), args.command)
 
     handlers = {"basket": cmd_basket, "probe": cmd_probe,
-                "codes": cmd_codes, "collect": cmd_collect}
+                "codes": cmd_codes, "collect": cmd_collect,
+                "analyze": cmd_analyze, "weather": cmd_weather}
     if args.command in handlers:
         return handlers[args.command](args, cfg, log)
 
