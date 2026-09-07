@@ -147,3 +147,156 @@ def summarize_shape(payload, depth: int = 0, max_depth: int = 3) -> list[str]:
     else:
         lines.append(f"{pad}{str(payload)[:80]}")
     return lines
+
+
+# ─────────────────────────────────────────────────────────────────
+# 여기서부터: 시계열 분석 과제용으로 추가한 부분
+# ─────────────────────────────────────────────────────────────────
+#
+# 위쪽 probe() 는 "하루치 스냅샷"만 가져온다. 시계열이 되려면 기간이 필요하다.
+# KAMIS 는 그 용도로 periodProductList 라는 별도 액션을 제공한다.
+#
+# ⚠️ 주의 — 두 액션은 파라미터 이름 규칙이 다르다
+#     dailyPriceByCategoryList : p_item_category_code  (밑줄 있음)
+#     periodProductList        : p_itemcategorycode    (밑줄 없음)
+#   같은 API인데 다르다. 실제로 겪는 흔한 오류라 주석으로 못박아 둔다.
+
+
+def list_items(cfg: dict, log, cert_key: str, cert_id: str,
+               regday: str, category_code: str,
+               cls_code: str = "01") -> list[dict]:
+    """어떤 부류에 어떤 품목이 있고, 코드가 무엇인지 KAMIS 에게 직접 물어본다.
+
+    품목 코드를 외워서 적으면 틀린다. 받아 적는다.
+    """
+    params = _params(
+        cfg, cert_key, cert_id,
+        action="dailyPriceByCategoryList",
+        p_product_cls_code=cls_code,
+        p_item_category_code=category_code,
+        p_regday=regday,
+        p_convert_kg_yn="N",
+    )
+    payload = _get(cfg, log, params)
+    rows = _rows(payload)
+
+    seen: dict[str, dict] = {}
+    for r in rows:
+        code = str(r.get("item_code") or r.get("itemcode") or "").strip()
+        name = str(r.get("item_name") or r.get("itemname") or "").strip()
+        if not code or not name:
+            continue
+        if code not in seen:
+            seen[code] = {
+                "item_code": code,
+                "item_name": name,
+                "kind_code": str(r.get("kind_code") or r.get("kindcode") or "").strip(),
+                "kind_name": str(r.get("kind_name") or r.get("kindname") or "").strip(),
+                "rank": str(r.get("rank") or r.get("productrankcode") or "").strip(),
+            }
+    return sorted(seen.values(), key=lambda x: x["item_code"])
+
+
+def period_price(cfg: dict, log, cert_key: str, cert_id: str,
+                 start_day: str, end_day: str,
+                 category_code: str, item_code: str,
+                 kind_code: str = "", rank_code: str = "",
+                 country_code: str = "", cls_code: str = "01") -> list[dict]:
+    """한 품목의 기간별 가격을 가져온다. 이것이 시계열의 원재료다.
+
+    날짜는 YYYY-MM-DD.
+    """
+    params = _params(
+        cfg, cert_key, cert_id,
+        action="periodProductList",
+        p_productclscode=cls_code,           # 밑줄 없음 — 위 주의 참고
+        p_startday=start_day,
+        p_endday=end_day,
+        p_itemcategorycode=category_code,
+        p_itemcode=item_code,
+        p_convert_kg_yn=cfg.get("kamis", {}).get("convert_kg", "N"),
+    )
+    if kind_code:
+        params["p_kindcode"] = kind_code
+    if rank_code:
+        params["p_productrankcode"] = rank_code
+    if country_code:
+        params["p_countrycode"] = country_code
+
+    log.info("  기간 조회 %s ~ %s (품목코드 %s)", start_day, end_day, item_code)
+    payload = _get(cfg, log, params)
+    return _rows(payload)
+
+
+def _rows(payload) -> list[dict]:
+    """응답에서 '가격 줄 목록'만 꺼낸다.
+
+    KAMIS 응답 모양이 액션마다·시기마다 조금씩 다르다.
+    그래서 '어디에 있든 찾아낸다'는 방식으로 짰다. 한 군데를 가정하지 않는다.
+    """
+    if isinstance(payload, str):
+        return []
+
+    def dig(node):
+        if isinstance(node, list):
+            if node and isinstance(node[0], dict):
+                return node
+            for x in node:
+                found = dig(x)
+                if found:
+                    return found
+            return []
+        if isinstance(node, dict):
+            for key in ("item", "items", "data", "price", "list"):
+                if key in node:
+                    found = dig(node[key])
+                    if found:
+                        return found
+            for v in node.values():
+                found = dig(v)
+                if found:
+                    return found
+        return []
+
+    return dig(payload)
+
+
+def error_message(payload) -> str | None:
+    """KAMIS 는 실패해도 HTTP 200 을 준다. 본문 안의 error_code 를 봐야 한다."""
+    if isinstance(payload, dict):
+        for key in ("error_code", "errorCode", "result_code"):
+            if key in payload:
+                code = str(payload[key])
+                return None if code in ("000", "0", "OK") else f"KAMIS error_code={code}"
+        for v in payload.values():
+            if isinstance(v, dict):
+                msg = error_message(v)
+                if msg:
+                    return msg
+    return None
+
+
+def month_chunks(start_day: str, end_day: str, months: int = 6) -> list[tuple[str, str]]:
+    """긴 기간을 잘라 나눈다.
+
+    2년치를 한 번에 달라고 하면 서버가 시간 초과로 끊는 경우가 있다.
+    작게 나눠 여러 번 부르는 편이 결과적으로 빠르고 확실하다.
+    """
+    from datetime import date, timedelta
+
+    s = date.fromisoformat(start_day)
+    e = date.fromisoformat(end_day)
+    out: list[tuple[str, str]] = []
+    cur = s
+    while cur <= e:
+        y, m = cur.year, cur.month + months
+        while m > 12:
+            y, m = y + 1, m - 12
+        try:
+            nxt = date(y, m, cur.day)
+        except ValueError:
+            nxt = date(y, m, 28)
+        stop = min(nxt - timedelta(days=1), e)
+        out.append((cur.isoformat(), stop.isoformat()))
+        cur = stop + timedelta(days=1)
+    return out
