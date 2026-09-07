@@ -1,0 +1,21 @@
+# 가상환경·캐시
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# 비밀 키 — 절대 올리지 않는다
+.env
+
+# 로그·중간 산출물
+logs/
+output/
+
+# 데이터 — 분석용 CSV는 저장소에 포함한다 (과제 요구사항)
+# 대신 용량 큰 DB와 API 원문은 제외한다
+data/*.db
+data/raw/
+
+# OS 부스러기
+.DS_Store
+Thumbs.db
