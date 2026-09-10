@@ -19,3 +19,6 @@ data/raw/
 # OS 부스러기
 .DS_Store
 Thumbs.db
+
+# 압축 파일
+*.zip
