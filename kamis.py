@@ -43,7 +43,7 @@ def _params(cfg: dict, cert_key: str, cert_id: str, **extra) -> dict:
     return base
 
 
-def _get(cfg: dict, log, params: dict) -> dict | str:
+def _get(cfg: dict, log, params: dict, max_retry: int | None = None) -> dict | str:
     """타임아웃·재시도를 갖춘 GET. (bapsang-trend 의 원칙 그대로)
 
     4xx = 내 잘못 → 즉시 포기
@@ -52,7 +52,8 @@ def _get(cfg: dict, log, params: dict) -> dict | str:
     req = cfg.get("request", {})
     url = cfg.get("kamis", {}).get("base_url", "")
     timeout = req.get("timeout_sec", 15)
-    max_retry = req.get("max_retry", 3)
+    if max_retry is None:
+        max_retry = req.get("max_retry", 3)
     headers = {"User-Agent": req.get("user_agent", "JecheolPlanner/1.0")}
 
     for attempt in range(1, max_retry + 1):
@@ -180,21 +181,24 @@ def list_items(cfg: dict, log, cert_key: str, cert_id: str,
     payload = _get(cfg, log, params)
     rows = _rows(payload)
 
-    seen: dict[str, dict] = {}
+    # 품목 단위로 접지 않고 (품목, 품종, 등급) 조합을 그대로 돌려준다.
+    # 접어 버리면 '호박'의 애호박과 쥬키니를 구분할 수 없다.
+    out: list[dict] = []
     for r in rows:
         code = str(r.get("item_code") or r.get("itemcode") or "").strip()
         name = str(r.get("item_name") or r.get("itemname") or "").strip()
         if not code or not name:
             continue
-        if code not in seen:
-            seen[code] = {
-                "item_code": code,
-                "item_name": name,
-                "kind_code": str(r.get("kind_code") or r.get("kindcode") or "").strip(),
-                "kind_name": str(r.get("kind_name") or r.get("kindname") or "").strip(),
-                "rank": str(r.get("rank") or r.get("productrankcode") or "").strip(),
-            }
-    return sorted(seen.values(), key=lambda x: x["item_code"])
+        out.append({
+            "item_code": code,
+            "item_name": name,
+            "kind_code": str(r.get("kind_code") or r.get("kindcode") or "").strip(),
+            "kind_name": str(r.get("kind_name") or r.get("kindname") or "").strip(),
+            "rank_code": str(r.get("rank_code") or r.get("productrankcode") or "").strip(),
+            "rank_name": str(r.get("rank") or "").strip(),
+            "unit": str(r.get("unit") or "").strip(),
+        })
+    return out
 
 
 def period_price(cfg: dict, log, cert_key: str, cert_id: str,
@@ -224,7 +228,10 @@ def period_price(cfg: dict, log, cert_key: str, cert_id: str,
         params["p_countrycode"] = country_code
 
     log.info("  기간 조회 %s ~ %s (품목코드 %s)", start_day, end_day, item_code)
-    payload = _get(cfg, log, params)
+    # 재시도 1번만.
+    #   시간 초과는 대개 "이 구간이 너무 크다"는 뜻이라, 같은 크기로 다시 물어도 또 끊긴다.
+    #   여러 번 기다리느니 빨리 포기하고 호출자가 구간을 쪼개는 편이 빠르다.
+    payload = _get(cfg, log, params, max_retry=1)
     return _rows(payload)
 
 
@@ -274,6 +281,43 @@ def error_message(payload) -> str | None:
                 if msg:
                     return msg
     return None
+
+
+def split_range(start_day: str, end_day: str) -> tuple[tuple[str, str], tuple[str, str]] | None:
+    """구간을 절반으로 나눈다. 15일보다 짧아지면 더 나누지 않는다.
+
+    왜 필요한가
+        KAMIS 기간 조회는 한 번에 돌려줄 수 있는 양에 한계가 있다.
+        그 한계가 문서에 안 나와 있어서, 넘으면 오류 대신 **빈 응답**이 온다.
+        그래서 "빈 응답이면 절반으로 쪼개 다시 물어본다"로 짰다.
+        한계값을 짐작해 박아 넣는 것보다 확실하다.
+    """
+    from datetime import date, timedelta
+
+    s = date.fromisoformat(start_day)
+    e = date.fromisoformat(end_day)
+    span = (e - s).days
+    if span < 15:
+        return None
+    mid = s + timedelta(days=span // 2)
+    return (s.isoformat(), mid.isoformat()), \
+           ((mid + timedelta(days=1)).isoformat(), e.isoformat())
+
+
+def day_chunks(start_day: str, end_day: str, days: int) -> list[tuple[str, str]]:
+    """일수로 잘라 나눈다. 서버가 받아주는 크기를 알아낸 뒤 그 크기로 쓴다."""
+    from datetime import date, timedelta
+
+    s = date.fromisoformat(start_day)
+    e = date.fromisoformat(end_day)
+    out: list[tuple[str, str]] = []
+    cur = s
+    step = max(int(days), 5)
+    while cur <= e:
+        stop = min(cur + timedelta(days=step), e)
+        out.append((cur.isoformat(), stop.isoformat()))
+        cur = stop + timedelta(days=1)
+    return out
 
 
 def month_chunks(start_day: str, end_day: str, months: int = 6) -> list[tuple[str, str]]:

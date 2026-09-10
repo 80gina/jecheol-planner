@@ -52,6 +52,11 @@ REASON = {
     "20": ("서비스 접근 거부", "해당 서비스에 활용신청이 되어 있는지 확인하세요."),
     "10": ("잘못된 요청 변수", "지점 번호나 날짜 형식을 확인하세요."),
     "12": ("폐기된 서비스", "다른 서비스로 바꿔야 합니다."),
+    # 아래는 기상청이 header.resultCode 로 주는 것들 (위와 번호 체계가 다르다)
+    "99": ("날짜 범위 오류",
+           "기상청 ASOS 일자료는 하루가 끝나야 확정되어 '전날까지'만 제공됩니다.\n"
+           "  끝 날짜를 어제 이전으로 잡으세요."),
+    "03": ("해당 자료 없음", "그 기간·지점에 관측 자료가 없습니다. 지점 번호를 확인하세요."),
 }
 
 
@@ -61,6 +66,11 @@ def explain(text: str) -> str | None:
 
     m = re.search(r'"?returnReasonCode"?\s*[:>]\s*"?(\d+)"?', text)
     code = m.group(1) if m else None
+    if not code:
+        # 기상청은 정상 응답에도 resultCode 를 넣는다. "00" 은 성공이므로 건너뛴다.
+        m = re.search(r'"?resultCode"?\s*[:>]\s*"?(\d+)"?', text)
+        if m and m.group(1) not in ("00", "0"):
+            code = m.group(1)
     if not code:
         m = re.search(r'"?errMsg"?\s*[:>]\s*"?([A-Z_]+)', text)
         if m and "NOT_REGISTERED" in m.group(1):
