@@ -566,8 +566,9 @@ python probe_history.py          # KAMIS 가 과거 몇 년까지 답하는지 �
 | 항목 | 내용 |
 |---|---|
 | 배포 URL | <https://claude.ai/code/artifact/6b7c06c4-b5e6-4ae6-8f8c-bd2c13d46c41> |
-| 저장소 사본 | `dashboard.html` — 인터넷 없이도 브라우저로 바로 열린다 |
-| 구성 | 단일 HTML. 외부 라이브러리 없이 SVG를 직접 그린다. 데이터는 파일 안에 들어 있다 |
+| 저장소 사본 | `web/index.html` — 내려받아 더블클릭하면 인터넷 없이도 열린다 |
+| 구성 | 단일 HTML. 외부 라이브러리 없이 SVG를 직접 그린다. 데이터도 파일 안에 들어 있어 **서버가 필요 없다** |
+| 배포 방식 | Vercel 정적 호스팅. Root Directory `web`, 빌드 명령 없음, 환경 변수 없음 |
 
 **바꿔볼 수 있는 것 — 과제가 요구한 "기간/조건 탐색"**
 
