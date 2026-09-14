@@ -2,6 +2,7 @@
 
 **작성자** 김진아
 **저장소** https://github.com/80gina/jecheol-planner
+**대시보드** https://claude.ai/code/artifact/6b7c06c4-b5e6-4ae6-8f8c-bd2c13d46c41
 **작성일** 2026-09-14
 **분석 기간** 2025-09-10 ~ 2026-09-10 (영업일 기준)
 
@@ -564,7 +565,7 @@ python probe_history.py          # KAMIS 가 과거 몇 년까지 답하는지 �
 
 | 항목 | 내용 |
 |---|---|
-| 배포 URL | 대시보드 아티팩트 (제출 시 링크 기재) |
+| 배포 URL | <https://claude.ai/code/artifact/6b7c06c4-b5e6-4ae6-8f8c-bd2c13d46c41> |
 | 저장소 사본 | `dashboard.html` — 인터넷 없이도 브라우저로 바로 열린다 |
 | 구성 | 단일 HTML. 외부 라이브러리 없이 SVG를 직접 그린다. 데이터는 파일 안에 들어 있다 |
 
