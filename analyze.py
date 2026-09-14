@@ -39,6 +39,7 @@ OUTLIER_WINDOW = 31     # 이상치 판정에 쓰는 이동중앙값 창 (홀수
 OUTLIER_RATIO = 0.5     # 이동중앙값 대비 ±50% 밖이면 이상치로 본다
 MA_SHORT, MA_LONG = 7, 30
 YEAR_DAYS = 261         # 1년치 영업일 수 (주말을 뺀 뒤의 한 해)
+WEEK_DAYS = 5           # 한 주의 영업일 수 (월~금)
 
 # ── 색: dataviz 기본 팔레트 (검증된 순서대로만 쓴다)
 C1, C2, C3 = "#2a78d6", "#eb6834", "#1baf7a"
@@ -188,29 +189,72 @@ def volatility(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("cv", ascending=False)
 
 
-def decompose(s: pd.Series, period: int = YEAR_DAYS) -> dict:
+def pick_period(n: int) -> tuple[int, str]:
+    """자료 길이에 맞는 분해 주기를 고른다.
+
+    고전적 분해는 주기 길이만 한 창을 이동평균해서 추세를 뽑는다.
+    그러려면 창이 자료 안에서 적어도 두 번은 온전히 채워져야 한다.
+    한 번도 못 채우면 추세가 통째로 비고, 계절성·잔차도 따라서 빈다.
+
+    KAMIS 기간 조회는 오늘 기준 최근 1년만 제공한다(2026-09 확인).
+    따라서 지금 자료로는 연간 주기를 분해할 수 없다. 대신 주간(월~금)
+    주기로 분해한다. 1년치면 약 48주기라 통계적으로 충분하다.
+    """
+    if n >= YEAR_DAYS * 2:
+        return YEAR_DAYS, "연간"
+    return WEEK_DAYS, "주간"
+
+
+def decompose(s: pd.Series, period: int | None = None) -> dict:
     """고전적 가법 분해: 원본 = 추세 + 계절성 + 잔차.
 
-    1) 추세   : 1년치(영업일 261일) 중심 이동평균 — 한 해를 통째로 평균 내면
-                계절 성분이 서로 상쇄되고 긴 흐름만 남는다
-    2) 계절성 : (원본 - 추세) 를 '몇 월 며칠인가' 로 묶어 평균
+    1) 추세   : 주기 길이만 한 중심 이동평균 — 한 주기를 통째로 평균 내면
+                주기 성분이 서로 상쇄되고 긴 흐름만 남는다
+    2) 계절성 : (원본 - 추세) 를 '주기 안 어느 위치인가' 로 묶어 평균
+                연간 주기면 '몇 월 며칠', 주간 주기면 '무슨 요일'
     3) 잔차   : 남은 것. 설명되지 않는 부분이다
+
+    period 를 주지 않으면 자료 길이를 보고 pick_period 가 고른다.
     """
+    n = int(s.notna().sum())
+    if period is None:
+        period, cycle = pick_period(n)
+    else:
+        cycle = "연간" if period >= YEAR_DAYS else "주간"
+
     # min_periods 를 창 크기와 같게 둔다. 절반만 채워도 계산하게 하면
     # 구간 양 끝에서 없는 추세가 만들어져 보인다. 모르는 구간은 비워 두는 편이 정직하다.
     trend = s.rolling(period, center=True, min_periods=period).mean()
     detr = s - trend
-    doy = s.index.dayofyear
-    seas_map = detr.groupby(doy).mean()
-    # 12월 31일과 1월 1일은 이어져 있다. 그냥 평활하면 연말연시에 턱이 생기므로
-    # 앞뒤로 한 바퀴씩 이어 붙여 평활한 뒤 가운데만 쓴다.
-    ring = pd.concat([seas_map, seas_map, seas_map])
-    ring = ring.rolling(15, center=True, min_periods=1).mean()
-    seas_map = ring.iloc[len(seas_map):len(seas_map) * 2]
-    seas_map.index = detr.groupby(doy).mean().index
-    seasonal = pd.Series(doy, index=s.index).map(seas_map)
+
+    if cycle == "연간":
+        phase = pd.Series(s.index.dayofyear, index=s.index)
+        seas_map = detr.groupby(phase.values).mean()
+        # 12월 31일과 1월 1일은 이어져 있다. 그냥 평활하면 연말연시에 턱이 생기므로
+        # 앞뒤로 한 바퀴씩 이어 붙여 평활한 뒤 가운데만 쓴다.
+        raw_idx = seas_map.index
+        ring = pd.concat([seas_map, seas_map, seas_map])
+        ring = ring.rolling(15, center=True, min_periods=1).mean()
+        seas_map = ring.iloc[len(raw_idx):len(raw_idx) * 2]
+        seas_map.index = raw_idx
+    else:
+        # 주간 주기는 위상이 월~금 다섯 개뿐이다. 평활할 이웃이 없으므로
+        # 요일별 평균을 그대로 쓴다. 값이 다섯 개라 표로도 읽힌다.
+        phase = pd.Series(s.index.dayofweek, index=s.index)
+        seas_map = detr.groupby(phase.values).mean()
+
+    seasonal = pd.Series(phase.values, index=s.index).map(seas_map)
     resid = s - trend - seasonal
-    return {"observed": s, "trend": trend, "seasonal": seasonal, "resid": resid}
+
+    # 설명된 비중 — 잔차가 작을수록 분해가 잘 들어맞은 것이다.
+    ok = resid.notna()
+    strength = None
+    if ok.sum() > 10 and s[ok].var() > 0:
+        strength = round(float(1 - resid[ok].var() / s[ok].var()) * 100, 1)
+
+    return {"observed": s, "trend": trend, "seasonal": seasonal, "resid": resid,
+            "period": period, "cycle": cycle, "n": n, "strength": strength,
+            "phase_mean": {int(k): round(float(v), 1) for k, v in seas_map.items()}}
 
 
 def temp_vs_price(df: pd.DataFrame, wx: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
@@ -343,25 +387,38 @@ def fig_volatility(vol: pd.DataFrame, path: Path):
 
 
 def fig_decompose(parts: dict, name: str, path: Path):
+    cycle = parts.get("cycle", "연간")
+    period = parts.get("period", YEAR_DAYS)
     labels = [("observed", "원본", C1), ("trend", "추세", C2),
-              ("seasonal", "계절성", C3), ("resid", "잔차", INK3)]
+              ("seasonal", f"{cycle} 주기", C3), ("resid", "잔차", INK3)]
     fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
     fig.patch.set_facecolor(SURFACE)
     for ax, (k, lab, color) in zip(axes, labels):
         ax.plot(parts[k].index, parts[k].values, color=color, linewidth=1.4)
         if k in ("seasonal", "resid"):
             ax.axhline(0, color=GRID, linewidth=1)
-        if k == "trend":
-            ax.text(0.995, 0.06, "양 끝은 1년치 창이 다 차지 않아 비어 있습니다",
+        if k == "trend" and cycle == "연간":
+            ax.text(0.995, 0.06,
+                    f"양 끝은 {period}영업일 창이 다 차지 않아 비어 있습니다",
                     transform=ax.transAxes, ha="right", fontsize=9, color=INK3)
         _style(ax, lab)
         _won(ax)
     import matplotlib.dates as mdates
     axes[-1].xaxis.set_major_locator(mdates.MonthLocator(bymonth=(1, 4, 7, 10)))
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
-    fig.suptitle(f"{name} — 시계열 분해 (원본 = 추세 + 계절성 + 잔차)",
-                 x=0.012, ha="left", fontsize=15, color=INK, y=0.985)
-    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    st = parts.get("strength")
+    tail = f"  ·  설명된 비중 {st}%" if st is not None else ""
+    fig.suptitle(f"{name} — 시계열 분해 (원본 = 추세 + {cycle} 주기 + 잔차){tail}",
+                 x=0.012, ha="left", fontsize=15, color=INK, y=0.988)
+    if cycle == "주간":
+        fig.text(0.012, 0.955,
+                 f"자료가 1년(1주기)뿐이라 연간 주기는 분해할 수 없어 "
+                 f"주간({period}영업일) 주기로 분해했습니다. "
+                 "월별 계절 지수는 03번 그래프를 보십시오.",
+                 ha="left", fontsize=9.5, color=INK3)
+        fig.tight_layout(rect=[0, 0, 1, 0.945])
+    else:
+        fig.tight_layout(rect=[0, 0, 1, 0.955])
     fig.savefig(path, dpi=140, facecolor=SURFACE)
     plt.close(fig)
 
@@ -416,6 +473,12 @@ def run(log, focus: str = "baechu") -> int:
     si = seasonal_index(df)
     vol = volatility(df)
 
+    # 보고서 부록에 그대로 붙일 수 있게 표로도 남긴다.
+    si_wide = si.pivot(index="item", columns="month", values="index").round(1)
+    si_wide.to_csv(BASE_DIR / "data" / "seasonal_index.csv", encoding="utf-8-sig")
+    vol.round(1).to_csv(BASE_DIR / "data" / "volatility.csv",
+                        index=False, encoding="utf-8-sig")
+
     if focus not in set(df["key"]):
         focus = df["key"].iloc[0]
     fs = (df[df["key"] == focus].set_index("date")["price"]
@@ -459,6 +522,25 @@ def run(log, focus: str = "baechu") -> int:
             "결측": f"연속 {GAP_FILL_MAX}일 이하만 선형보간, 그 이상은 결측 유지",
             "이상치": f"{OUTLIER_WINDOW}일 이동중앙값 대비 ±{int(OUTLIER_RATIO*100)}% 밖",
         },
+        "자료범위": {
+            "확인": "KAMIS 기간 조회는 오늘 기준 최근 1년만 제공한다 "
+                    "(2026-09-14 probe_history.py 로 확인). "
+                    "범위 밖 구간은 '자료 없음'이 아니라 HTTP 500 으로 응답한다",
+            "영향": "연간 계절성의 반복성은 1주기만 관측되어 검증할 수 없다. "
+                    "월별 계절지수는 '관측된 한 해의 모양'으로 읽어야 한다",
+        },
+        "분해방식": {
+            "주기": parts.get("cycle"),
+            "창(영업일)": parts.get("period"),
+            "관측수": parts.get("n"),
+            "설명된비중%": parts.get("strength"),
+            "위상평균(원)": parts.get("phase_mean"),
+            "선택이유": "고전적 분해는 주기 길이만 한 창이 자료 안에서 두 번 이상 "
+                        "채워져야 추세와 주기를 가를 수 있다. "
+                        f"자료가 {parts.get('n')}영업일이라 연간({YEAR_DAYS}일) 창은 "
+                        "그 조건을 못 채워 추세가 사실상 빈다. "
+                        f"주간({WEEK_DAYS}일) 주기는 약 {parts.get('n', 0) // WEEK_DAYS}주기라 충분하다",
+        },
         "변동성": vol.to_dict("records"),
         "계절지수": {
             k: {"최고월": int(g.loc[g["index"].idxmax(), "month"]),
@@ -471,7 +553,7 @@ def run(log, focus: str = "baechu") -> int:
         "분해": {
             "추세_시작": float(parts["trend"].dropna().iloc[0]) if parts["trend"].notna().any() else None,
             "추세_끝": float(parts["trend"].dropna().iloc[-1]) if parts["trend"].notna().any() else None,
-            "계절성_진폭": float(parts["seasonal"].max() - parts["seasonal"].min()),
+            "주기성분_진폭": float(parts["seasonal"].max() - parts["seasonal"].min()),
             "잔차_표준편차": float(parts["resid"].std()),
         },
     }
