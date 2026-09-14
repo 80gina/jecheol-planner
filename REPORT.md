@@ -2,7 +2,7 @@
 
 **작성자** 김진아
 **저장소** https://github.com/80gina/jecheol-planner
-**대시보드** https://claude.ai/code/artifact/6b7c06c4-b5e6-4ae6-8f8c-bd2c13d46c41
+**대시보드** https://jecheol-planner-y14w.vercel.app
 **작성일** 2026-09-14
 **분석 기간** 2025-09-10 ~ 2026-09-10 (영업일 기준)
 
@@ -565,7 +565,8 @@ python probe_history.py          # KAMIS 가 과거 몇 년까지 답하는지 �
 
 | 항목 | 내용 |
 |---|---|
-| 배포 URL | <https://claude.ai/code/artifact/6b7c06c4-b5e6-4ae6-8f8c-bd2c13d46c41> |
+| 배포 URL | <https://jecheol-planner-y14w.vercel.app> |
+| 호스팅 | Vercel 정적 호스팅 — 로그인·공유 설정 없이 누구나 열린다 |
 | 저장소 사본 | `web/index.html` — 내려받아 더블클릭하면 인터넷 없이도 열린다 |
 | 구성 | 단일 HTML. 외부 라이브러리 없이 SVG를 직접 그린다. 데이터도 파일 안에 들어 있어 **서버가 필요 없다** |
 | 배포 방식 | Vercel 정적 호스팅. Root Directory `web`, 빌드 명령 없음, 환경 변수 없음 |
