@@ -5,7 +5,9 @@
 
 **2차 미션 · AI 데이터 분석 : 데이터 기반 트렌드 분석**
 
+
 [참고] file:///C:/Users/yello/Downloads/%EA%B8%B0%EB%8A%A5%EB%AA%85%EC%84%B8%EC%84%9C_%EC%9D%B8%ED%8F%AC%EA%B7%B8%EB%9E%98%ED%94%BD.html
+
 ---
 
 ## 1. 무엇을 분석했나
